@@ -1,22 +1,8 @@
 import * as core from '@actions/core';
-import { CDP_PORT_ENV_VAR, allocateFreePort, killTree, spawnShellCommand, waitForExit, workspaceReportDir } from './spawn';
-import type { ExitInfo } from './spawn';
-import { readActionInputs } from './inputs';
-import { createProcSampler, probeClockTicks } from './procSampler';
-import { createCdpSampler } from './cdpSampler';
-import { TabMonitor } from './tabMonitor';
-import { resolveRamLimitBytes } from './limit';
-import { writeReports, type ReportMeta } from './report';
-import { formatBytes } from './evaluate';
+import { killTree, spawnShellCommand, waitForExit } from './spawn';
+import { readActionInputs, resolveWorkPath } from './inputs';
+import { evaluateThresholds, loadReadings, type BreachTick, type SystemReading } from './monocart';
 
-const FINAL_SAMPLE_DELAY_MS = 800;
-
-function output(value: number | string | null | undefined): string {
-  if (value === null || value === undefined) return '';
-  return typeof value === 'number' ? value.toFixed(2) : String(value);
-}
-
-/** Sentinel so main() does not call setFailed twice for the same problem. */
 class SettledError extends Error {}
 
 function setFailure(exception: Error): never {
@@ -26,63 +12,17 @@ function setFailure(exception: Error): never {
 
 async function run(): Promise<void> {
   const inputs = readActionInputs();
-  await probeClockTicks();
-  const ramLimitBytes = await resolveRamLimitBytes();
-
-  // CDP port precedence: explicit input > pre-existing env > auto-allocated.
-  let cdpPort = inputs.cdpPort;
-  if (cdpPort === null) {
-    const envPort = Number(process.env[CDP_PORT_ENV_VAR] ?? '');
-    cdpPort = Number.isInteger(envPort) && envPort > 0 ? envPort : await allocateFreePort();
-  }
 
   core.startGroup('Playwright Resource Monitor — configuration');
-  core.info(`run-command:        ${inputs.runCommand}`);
-  core.info(`cpu-threshold:      ${inputs.cpuThreshold}% of one core (worst single tab)`);
-  core.info(`memory-threshold:   ${inputs.memoryThreshold}% of ${formatBytes(ramLimitBytes)} (effective RAM limit)`);
-  core.info(`polling-interval:   ${inputs.pollingIntervalSeconds}s`);
-  core.info(`fail-on-breach:     ${inputs.failOnBreach}`);
-  core.info(`CDP port (injected as ${CDP_PORT_ENV_VAR} for the run-command): ${cdpPort}`);
-  if (process.platform !== 'linux' && inputs.cdpPort === null) {
-    core.warning('The /proc scanner only works on Linux. On this OS, enable CDP mode: set the cdp-port input and follow the README playwright.config.ts snippet.');
-  }
+  core.info(`run-command:      ${inputs.runCommand}`);
+  core.info(`cpu-threshold:    ${inputs.cpuThreshold}% (machine-wide, all cores)`);
+  core.info(`memory-threshold: ${inputs.memoryThreshold}% of total RAM`);
+  core.info(`fail-on-breach:   ${inputs.failOnBreach}`);
+  core.info(`monocart-json:    ${inputs.monocartJson}`);
   core.endGroup();
 
-  // The /proc sampler self-guards on non-Linux (sample() no-ops there).
-  const samplers = [createProcSampler()];
+  const child = spawnShellCommand(inputs.runCommand, { ...process.env });
 
-  // Attach CDP in the background while the command boots; it only succeeds
-  // if the user's Playwright config opened the debugging port. Probing stops
-  // as soon as the command exits so short runs are not delayed.
-  const cdpAbort = new AbortController();
-  const cdpAttempt = createCdpSampler('127.0.0.1', cdpPort, cdpAbort.signal)
-    .then((sampler) => {
-      if (sampler !== null) {
-        monitor.addSampler(sampler);
-        core.info('CDP endpoint detected — using precise per-tab metrics.');
-      }
-      return sampler;
-    })
-    .catch((err: Error) => {
-      core.debug(`CDP attach failed: ${err.message}`);
-      return null;
-    });
-
-  const monitor = new TabMonitor({
-    intervalSeconds: inputs.pollingIntervalSeconds,
-    thresholds: { cpuThreshold: inputs.cpuThreshold, memoryThreshold: inputs.memoryThreshold },
-    ramLimitBytes,
-    samplers,
-  });
-  monitor.start();
-
-  const startedAt = Date.now();
-  const child = spawnShellCommand(inputs.runCommand, {
-    ...process.env,
-    [CDP_PORT_ENV_VAR]: String(cdpPort),
-  });
-
-  let exitInfo: ExitInfo = { code: null, signal: null, error: null };
   let interrupted = false;
   const onSignal = (signal: NodeJS.Signals): void => {
     if (interrupted || child.pid === undefined) return;
@@ -95,129 +35,97 @@ async function run(): Promise<void> {
   process.once('SIGINT', () => onSignal('SIGINT'));
   process.once('SIGTERM', () => onSignal('SIGTERM'));
 
-  exitInfo = await waitForExit(child);
-  cdpAbort.abort(); // no point probing for a CDP endpoint after teardown
-  await cdpAttempt; // settle attach promise (sampler already added on success)
-
-  // One last sample catches the tail of the run before browsers exit.
-  await new Promise((r) => setTimeout(r, FINAL_SAMPLE_DELAY_MS));
-  await monitor.tickOnce();
-  const summary = await monitor.stop();
-
-  const finishedAt = Date.now();
+  const exitInfo = await waitForExit(child);
   const commandFailed = exitInfo.error !== null || exitInfo.code !== 0;
 
-  const reportDir = workspaceReportDir(inputs.reportDir);
-  const reportMeta: ReportMeta = {
-    runCommand: inputs.runCommand,
-    cpuThreshold: inputs.cpuThreshold,
-    memoryThreshold: inputs.memoryThreshold,
-    pollingIntervalSeconds: inputs.pollingIntervalSeconds,
-    ramLimitBytes,
-    cdpPort,
-    startedAt,
-    finishedAt,
-    commandExitCode: exitInfo.code,
-    commandSignal: exitInfo.signal,
-  };
-  const reports = writeReports(reportDir, summary, reportMeta);
+  // Enforcement reads monocart's own sampler output after the run.
+  const jsonPath = resolveWorkPath(inputs.monocartJson);
+  const { reportFound, readings, memTotalBytes } = loadReadings(jsonPath);
+  const cfg = { cpuThreshold: inputs.cpuThreshold, memoryThreshold: inputs.memoryThreshold };
+  const { peakCpuPercent, peakMemoryPercent, breachTicks } = evaluateThresholds(readings, cfg);
+  const breached = breachTicks.length > 0;
 
-  setOutputs(summary, reports.jsonPath, reports.csvPath);
-  printSummaryLine(summary, reportDir, commandFailed, inputs.cpuThreshold, inputs.memoryThreshold);
+  setOutputs(peakCpuPercent, peakMemoryPercent, breachTicks.length, readings.length, reportFound);
+  printSummary(inputs, { reportFound, readings, memTotalBytes, peakCpuPercent, peakMemoryPercent, breachTicks, jsonPath, commandFailed });
 
   if (exitInfo.error !== null) {
     setFailure(new Error(`Failed to start run-command: ${exitInfo.error.message}`));
     return;
   }
   if (commandFailed) {
-    const breachNote = summary.breaches.length > 0 ? ' Threshold breaches were also recorded (see the report).' : '';
+    const breachNote = breached ? ' Threshold breaches were also recorded (see the report).' : '';
     setFailure(new Error(`run-command failed with exit code ${exitInfo.code ?? '?'}, signal ${exitInfo.signal ?? 'none'}.${breachNote}`));
     return;
   }
-  if (summary.breaches.length > 0) {
-    const peakMemBytes = memoryBytesOf(summary);
+  if (breached) {
     const message =
-      `Resource threshold breach during the run: ` +
-      `peak tab CPU ${summary.peakCpu?.cpuPercent.toFixed(1) ?? '?'}% of one core ` +
-      `(threshold ${inputs.cpuThreshold}%), ` +
-      `peak tab memory ${formatBytes(peakMemBytes)} ` +
-      `(${summary.peakMem?.memoryPercent.toFixed(1) ?? '?'}% of limit, threshold ${inputs.memoryThreshold}%). ` +
-      `${summary.breaches.length} breaching sample(s); full data in ${reports.jsonPath}`;
+      `Resource threshold breach: peak machine CPU ${peakCpuPercent.toFixed(1)}% ` +
+      `(threshold ${inputs.cpuThreshold}%), peak memory ${peakMemoryPercent.toFixed(1)}% ` +
+      `of total RAM (threshold ${inputs.memoryThreshold}%). ${breachTicks.length} breaching sample(s). ` +
+      `Full timeline in the monocart report.`;
     if (inputs.failOnBreach) {
       setFailure(new Error(message));
       return;
     }
     core.warning(message);
+    return;
+  }
+  if (!reportFound && readings.length === 0) {
+    core.warning(
+      `No monocart report data found at "${inputs.monocartJson}" — threshold enforcement was skipped. ` +
+        'Add monocart-reporter to playwright.config with { outputFile: "./monocart-report/index.html", json: true } (see README).',
+    );
   } else {
-    core.info('No threshold breach detected. All good.');
+    core.info(`No threshold breach detected (${readings.length} samples). All good.`);
   }
-}
-
-function memoryBytesOf(
-  summary: { readings: { worst?: { memoryBytes?: number } | null }[] },
-): number {
-  let maxBytes = 0;
-  for (const reading of summary.readings) {
-    const bytes = reading.worst?.memoryBytes ?? 0;
-    if (bytes > maxBytes) maxBytes = bytes;
-  }
-  return maxBytes;
 }
 
 function setOutputs(
-  summary: {
-    peakCpu: { cpuPercent: number; label: string } | null;
-    peakMem: { memoryPercent: number; label: string } | null;
-    breaches: unknown[];
-    readings: unknown[];
-    source: string | null;
-  },
-  jsonPath: string,
-  csvPath: string,
+  peakCpuPercent: number,
+  peakMemoryPercent: number,
+  breachCount: number,
+  sampleCount: number,
+  reportFound: boolean,
 ): void {
-  core.setOutput('peak-tab-cpu-percent', output(summary.peakCpu?.cpuPercent ?? null));
-  core.setOutput('peak-tab-memory-percent', output(summary.peakMem?.memoryPercent ?? null));
-  core.setOutput('peak-tab-label', output(summary.peakCpu?.label ?? null));
-  core.setOutput('breach-count', String(summary.breaches.length));
-  core.setOutput('sample-count', String(summary.readings.length));
-  core.setOutput('cdp-attached', String(summary.source === 'cdp'));
-  core.setOutput('report-json-path', jsonPath);
-  core.setOutput('report-csv-path', csvPath);
+  core.setOutput('peak-cpu-percent', peakCpuPercent.toFixed(2));
+  core.setOutput('peak-memory-percent', peakMemoryPercent.toFixed(2));
+  core.setOutput('breach-count', String(breachCount));
+  core.setOutput('sample-count', String(sampleCount));
+  core.setOutput('report-found', String(reportFound));
 }
 
-function printSummaryLine(
-  summary: {
-    peakCpu: { cpuPercent: number; label: string } | null;
-    peakMem: { memoryPercent: number } | null;
-    readings: unknown[];
-  },
-  reportDir: string,
-  commandFailed: boolean,
-  cpuThreshold: number,
-  memoryThreshold: number,
+interface Evaluation {
+  reportFound: boolean;
+  readings: SystemReading[];
+  memTotalBytes: number;
+  peakCpuPercent: number;
+  peakMemoryPercent: number;
+  breachTicks: BreachTick[];
+  jsonPath: string;
+  commandFailed: boolean;
+}
+
+function printSummary(
+  inputs: { cpuThreshold: number; memoryThreshold: number },
+  ev: Evaluation,
 ): void {
-  try {
-    if (summary.readings.length === 0) return;
-    core.summary
-      .addHeading('Playwright Resource Monitor')
-      .addTable([
-        [{ data: 'Metric', header: true }, { data: 'Peak', header: true }, { data: 'Threshold', header: true }],
-        [
-          'Worst tab CPU (% of one core)',
-          { data: `${summary.peakCpu?.cpuPercent.toFixed(1) ?? 'n/a'}% (${summary.peakCpu?.label ?? ''})` },
-          `${cpuThreshold}%`,
-        ],
-        [
-          'Worst tab memory (% of RAM limit)',
-          { data: `${((summary.peakMem?.memoryPercent ?? 0)).toFixed(1)}%` },
-          `${memoryThreshold}%`,
-        ],
-      ])
-      .addRaw(`<p>Reports: <code>${reportDir}/report.json</code>, <code>${reportDir}/report.csv</code>. Command ${commandFailed ? 'failed' : 'succeeded'}.</p>`)
-      .write();
-  } catch {
-    // summary writing must never break the action
-  }
+  if (!ev.reportFound) return;
+
+  // The write() promise rejects when $GITHUB_STEP_SUMMARY is absent; swallow
+  // every failure — summary writing must never break the action.
+  core.summary
+    .addHeading('Playwright Resource Monitor')
+    .addTable([
+      [{ data: 'Metric', header: true }, { data: 'Peak', header: true }, { data: 'Threshold', header: true }],
+      ['Machine CPU (all cores)', `${ev.peakCpuPercent.toFixed(1)}%`, `${inputs.cpuThreshold}%`],
+      ['Machine memory (% of RAM)', `${ev.peakMemoryPercent.toFixed(1)}%`, `${inputs.memoryThreshold}%`],
+    ])
+    .addRaw(
+      `<p>${ev.breachTicks.length} breaching sample(s); ${ev.readings.length} samples total. ` +
+      `Timeline: <code>${ev.jsonPath}</code>.</p>`,
+    )
+    .write()
+    .catch((): void => {});
 }
 
 async function main(): Promise<void> {

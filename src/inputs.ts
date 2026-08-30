@@ -1,13 +1,12 @@
 import * as core from '@actions/core';
+import { resolve } from 'node:path';
 
 export interface ActionInputs {
   runCommand: string;
   cpuThreshold: number;
   memoryThreshold: number;
-  pollingIntervalSeconds: number;
   failOnBreach: boolean;
-  cdpPort: number | null;
-  reportDir: string;
+  monocartJson: string;
 }
 
 function readNumber(name: string, fallback: number, min: number, max: number): number {
@@ -32,8 +31,7 @@ export function readActionInputs(): ActionInputs {
     throw new Error('Input "run-command" cannot be empty.');
   }
 
-  const pollingIntervalSeconds = readNumber('polling-interval', 2, 0.5, 60);
-  const cpuThreshold = readNumber('cpu-threshold', 70, 1, 999);
+  const cpuThreshold = readNumber('cpu-threshold', 70, 1, 100);
   const memoryThreshold = readNumber('memory-threshold', 70, 1, 100);
 
   const failRaw = core.getInput('fail-on-breach') || 'true';
@@ -41,25 +39,18 @@ export function readActionInputs(): ActionInputs {
     throw new Error(`Input "fail-on-breach" must be "true" or "false"; received "${failRaw}".`);
   }
 
-  const cdpRaw = core.getInput('cdp-port', { required: false })?.trim() ?? '';
-  let cdpPort: number | null = null;
-  if (cdpRaw) {
-    const value = Number(cdpRaw);
-    if (!Number.isInteger(value) || value < 1 || value > 65535) {
-      throw new Error(`Input "cdp-port" must be an integer between 1 and 65535; received "${cdpRaw}".`);
-    }
-    cdpPort = value;
-  }
-
-  const reportDir = (core.getInput('report-dir', { required: false }) || 'resource-monitor').trim();
+  const monocartJson = (core.getInput('monocart-json') || 'monocart-report/index.json').trim();
 
   return {
     runCommand,
     cpuThreshold,
     memoryThreshold,
-    pollingIntervalSeconds,
     failOnBreach: /^true$/i.test(failRaw.trim()),
-    cdpPort,
-    reportDir,
+    monocartJson,
   };
+}
+
+export function resolveWorkPath(p: string): string {
+  const workspace = process.env.GITHUB_WORKSPACE || process.cwd();
+  return resolve(workspace, p);
 }

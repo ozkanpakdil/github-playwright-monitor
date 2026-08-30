@@ -1,7 +1,7 @@
 {
   "name": "playwright-resource-monitor",
   "version": "1.0.0",
-  "description": "GitHub Action that monitors per-tab CPU and memory usage of Playwright browser processes and fails the run when a tab crosses the configured thresholds.",
+  "description": "GitHub Action that monitors machine CPU and memory usage during Playwright test runs (via monocart-reporter) and fails the run when usage crosses the configured thresholds.",
   "license": "MIT",
   "private": true,
   "main": "dist/index.js",
@@ -11,13 +11,11 @@
     "all": "bun install && bun run build && bun test"
   },
   "dependencies": {
-    "@actions/core": "^1.11.1",
-    "ws": "^8.18.0"
+    "@actions/core": "^1.11.1"
   },
   "devDependencies": {
     "@types/bun": "^1.4.0",
     "@types/node": "^22.10.0",
-    "@types/ws": "^8.5.13",
     "bun": "^1.1.34",
     "typescript": "^5.7.2"
   }

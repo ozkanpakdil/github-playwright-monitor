@@ -1,8 +1,9 @@
 name: 'Playwright Resource Monitor'
 description: >-
-  Monitors per-tab CPU and memory usage of the browser processes Playwright
-  launches during a test run. Fails the step when the worst single tab crosses
-  the configured CPU or memory thresholds, with live warnings and a JSON/CSV report.
+  Monitors machine CPU and memory usage while Playwright tests run, powered by
+  the built-in sampler of monocart-reporter. Fails the step when usage exceeds
+  the configured thresholds (70% by default) and links to the monocart report
+  timeline.
 author: 'playwright-resource-monitor contributors'
 
 branding:
@@ -15,47 +16,33 @@ inputs:
     required: false
     default: 'npx playwright test'
   cpu-threshold:
-    description: 'Max allowed CPU for the worst single tab, as % of one core. Fails when exceeded.'
+    description: 'Max machine-wide CPU usage, % of all cores combined (monocart sampler). Fails when exceeded.'
     required: false
     default: '70'
   memory-threshold:
-    description: 'Max allowed memory for the worst single tab, as % of the effective RAM limit (cgroup limit if present, otherwise host total).'
+    description: 'Max machine memory usage, % of total RAM. Fails when exceeded.'
     required: false
     default: '70'
-  polling-interval:
-    description: 'How often, in seconds, to sample tab metrics (0.5–60).'
+  monocart-json:
+    description: 'Path to the monocart-reporter JSON data file (produced with the json: true reporter option).'
     required: false
-    default: '2'
+    default: 'monocart-report/index.json'
   fail-on-breach:
     description: 'When true (default), a threshold breach fails the step. When false, breaches only warn.'
     required: false
     default: 'true'
-  cdp-port:
-    description: 'Opt-in: port to poll for a Chrome DevTools Protocol endpoint for precise per-tab labeling. Empty = rely on the /proc scanner (Linux).'
-    required: false
-    default: ''
-  report-dir:
-    description: 'Directory (relative to the workspace) where the JSON and CSV reports are written.'
-    required: false
-    default: 'resource-monitor'
 
 outputs:
-  peak-tab-cpu-percent:
-    description: 'Highest CPU observed on any single tab during the run (% of one core).'
-  peak-tab-memory-percent:
-    description: 'Highest memory observed on any single tab during the run (% of the effective RAM limit).'
-  peak-tab-label:
-    description: 'Label of the tab that produced the CPU peak, e.g. "renderer pid 1234".'
+  peak-cpu-percent:
+    description: 'Highest machine-wide CPU usage observed during the run (% of all cores).'
+  peak-memory-percent:
+    description: 'Highest machine memory usage observed during the run (% of total RAM).'
   breach-count:
     description: 'Number of samples that breached a threshold.'
-  cdp-attached:
-    description: '"true" when metrics came from an attached CDP endpoint, "false" when from the /proc scanner (or neither).'
   sample-count:
-    description: 'Number of evaluation samples collected.'
-  report-json-path:
-    description: 'Absolute path to the detailed JSON report.'
-  report-csv-path:
-    description: 'Absolute path to the CSV report.'
+    description: 'Number of samples in the monocart report.'
+  report-found:
+    description: '"true" when the monocart JSON data file was found and parsed.'
 
 runs:
   using: 'node20'

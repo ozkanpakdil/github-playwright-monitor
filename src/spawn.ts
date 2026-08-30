@@ -1,21 +1,4 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import net from 'node:net';
-import { join, resolve } from 'node:path';
-
-export const CDP_PORT_ENV_VAR = 'RESOURCE_MONITOR_CDP_PORT';
-
-/** Picks an ephemeral free port on 127.0.0.1 (race is acceptable for CDP use). */
-export function allocateFreePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      const port = typeof address === 'object' && address !== null ? address.port : 0;
-      server.close((err) => (err ? reject(err) : resolve(port)));
-    });
-    server.on('error', reject);
-  });
-}
 
 /**
  * Spawns the run-command through a shell so users can write "npx playwright test"
@@ -77,9 +60,4 @@ export async function killTree(child: ChildProcess, graceMs = 5000): Promise<voi
   } catch {
     // already gone
   }
-}
-
-export function workspaceReportDir(reportDir: string): string {
-  const workspace = process.env.GITHUB_WORKSPACE || process.cwd();
-  return resolve(join(workspace, reportDir));
 }
