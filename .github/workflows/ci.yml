@@ -34,8 +34,66 @@ jobs:
             exit 1
           }
 
-      - name: Action smoke run (no browsers on runner — expects a clean pass)
+      - name: Pass-through smoke (no Playwright — must stay silent and green)
         uses: ./
         with:
           run-command: echo smoke
           polling-interval: 0.5
+
+  # Pre-release validation: run the action around a REAL Playwright suite
+  # with a real browser so both layers are exercised end to end:
+  #   - tab layer: /proc scanner on Linux observes the renderer process
+  #   - machine layer: monocart-reporter produces system.ticks
+  smoke-real:
+    name: Pre-release smoke (real Playwright)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install smoke project deps
+        run: cd test/smoke && npm install
+
+      - name: Install Chromium
+        run: cd test/smoke && npx playwright install --with-deps chromium
+
+      # The action spawns run-command from the workspace root; the smoke
+      # project's scripts resolve their own paths.
+      - name: Run the action around a real browser test
+        id: monitor
+        uses: ./
+        with:
+          run-command: npm test --prefix test/smoke
+          polling-interval: 1
+          # Generous limits: this job asserts that metrics are COLLECTED,
+          # not that they breach.
+          machine-cpu-threshold: 95
+          machine-memory-threshold: 95
+          tab-cpu-threshold: 900
+          tab-memory-threshold: 95
+          monocart-json: test/smoke/monocart-smoke/index.json
+
+      - name: Assert both layers produced data
+        run: |
+          node -e '
+            const t = Number(process.env.TAB_SAMPLES);
+            const m = Number(process.env.MACHINE_SAMPLES);
+            const src = process.env.TAB_SOURCE;
+            console.log(`tab-source=${src} tab-sample-count=${t} machine samples=${m}`);
+            if (src !== "proc") throw new Error(`expected tab-source=proc, got ${src}`);
+            if (t < 1) throw new Error("tab layer produced no samples");
+            if (m < 1) throw new Error("machine layer produced no samples");
+            console.log("smoke assertions passed");
+          ' || { echo "::error::smoke assertions failed"; exit 1; }
+        env:
+          TAB_SOURCE: ${{ steps.monitor.outputs.tab-source }}
+          TAB_SAMPLES: ${{ steps.monitor.outputs.tab-sample-count }}
+          MACHINE_SAMPLES: ${{ steps.monitor.outputs.sample-count }}
+
+      - name: Upload smoke reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-reports
+          path: |
+            test/smoke/monocart-smoke/
+            resource-monitor/

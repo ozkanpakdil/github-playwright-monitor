@@ -1,0 +1,11 @@
+{
+  "name": "resource-monitor-smoke",
+  "private": true,
+  "scripts": {
+    "test": "playwright test --config=playwright.config.js"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0",
+    "monocart-reporter": "^2.12.6"
+  }
+}

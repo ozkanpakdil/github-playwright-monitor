@@ -4,4 +4,6 @@ node_modules/
 .DS_Store
 resource-monitor/
 monocart-report/
+monocart-smoke/
+test-results/
 review/

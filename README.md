@@ -173,6 +173,20 @@ The monitored step replaces your normal `npx playwright test` step — it runs y
 
 Pinpoint the culprit: machine breaches → monocart report timeline; tab breaches → `resource-monitor/report.{json,csv}` (per-process rows with timestamps) plus the live alert groups in the log.
 
+## Testing before publishing
+
+No release is required to test the action — a Marketplace release only adds the listing. Test ladder, cheapest first:
+
+1. **Every push** — this repo's CI (`.github/workflows/ci.yml`) runs two validation jobs:
+   - `build-test`: typecheck + unit tests + a pass-through run proving the action stays silent and green when no Playwright activity exists.
+   - `smoke-real`: installs a minimal real Playwright project (`test/smoke/`) and runs **the action around a real browser test**, then **asserts both layers produced data** (`tab-source=proc`, sample counts > 0). This is the /proc tab layer's true Linux validation and runs on every push — before you ever tag a release.
+2. **From any other repo** — reference it directly by branch; no release needed:
+   ```yaml
+   - uses: ozkanpakdil/github-playwright-monitor@main
+   ```
+   (TrendCast's `ci.yml` does exactly this. Switch to `@v1` after publishing.)
+3. **Tag + release** only when you are ready for the Marketplace listing: `git tag v1 && git push origin v1` → Releases → *Draft a new release* → check **Publish to the GitHub Marketplace**.
+
 ## Publishing to the Marketplace
 
 This repository (`[ozkanpakdil/github-playwright-monitor](https://github.com/ozkanpakdil/github-playwright-monitor)`) is the publishing home:
@@ -221,11 +235,12 @@ dist/index.js         # committed bundle required by Marketplace
 
 ## Limitations & FAQ
 
-- **No per-tab metrics without browsers:** the tab layer reports nothing if the run-command doesn't launch a browser; machine layer still works whenever monocart is configured.
+- **No per-tab metrics without browsers:** the tab layer reports nothing if the run-command doesn't launch a browser; machine layer still works whenever monocart is configured. The whole action also passes cleanly (informational note only) when a wrapped command has nothing to monitor.
 - **No live warnings from the machine layer:** monocart writes its report at run end. Tab breaches *are* logged live during the run.
 - **CDP + multiple workers share one debug port:** for parallel suites on Linux, prefer the `/proc` tab layer.
 - **Sharded runs:** point `monocart-json` at the shard to enforce, or merge shard zips with monocart's merge CLI first.
 - **Windows runners:** machine layer works (Node APIs); tab layer needs CDP mode.
+- **Machine memory on a shared/dev machine:** machine memory % = `(total − free) / total` for the entire host, so a laptop with other apps open reads high (macOS especially). Size machine-memory thresholds for the dedicated CI runner, or use `fail-on-breach: false` locally.
 
 ## License
 
