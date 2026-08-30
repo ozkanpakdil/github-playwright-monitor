@@ -245,6 +245,13 @@ dist/index.js         # committed bundle required by Marketplace
 - **Windows runners:** machine layer works (Node APIs); tab layer needs CDP mode.
 - **Machine memory on a shared/dev machine:** machine memory % = `(total − free) / total` for the entire host, so a laptop with other apps open reads high (macOS especially). Size machine-memory thresholds for the dedicated CI runner, or use `fail-on-breach: false` locally.
 
+## Example look
+
+[Here](https://github.com/ozkanpakdil/TrendCast/actions/runs/33332258603) is archived link https://archive.ph/wip/epNVo
+
+<img width="2427" height="2425" alt="image" src="https://github.com/user-attachments/assets/3f8d5254-18a5-4dad-a50b-4390627ccb6f" />
+
+
 ## License
 
 [MIT](./LICENSE)
