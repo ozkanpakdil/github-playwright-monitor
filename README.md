@@ -1,21 +1,17 @@
 # Playwright Resource Monitor
 
-A thin GitHub Action that **fails your pipeline when machine CPU or memory usage crosses a threshold during Playwright test runs** — powered by the built-in system sampler of [monocart-reporter](https://github.com/cenfun/monocart-reporter).
+A **two-layer resource guard** for Playwright CI runs:
 
-While your tests run, monocart's 1-second sampler records machine-wide CPU % and memory usage and embeds it in its report data. This action runs your test command, reads monocart's report, compares the **peak** usage against your limits (70%/70% by default — you choose the numbers), prints a step summary, and calls `core.setFailed()` when a limit was exceeded.
+| Layer | Source | What it watches | Live during run |
+| --- | --- | --- | --- |
+| **Machine** | [monocart-reporter](https://github.com/cenfun/monocart-reporter)'s built-in sampler (1 s cadence) | Machine-wide CPU % (all cores) and memory % of total RAM | Timeline in the monocart HTML report |
+| **Tab** | This action's own sampler | **Worst single tab** (renderer process): CPU as % of one core, memory as % of the effective RAM limit | Yes — grouped `::warning::` alerts as the tests run |
 
-## Why this design
+Fails the step when **any configured threshold** is exceeded. Machine thresholds come from monocart's report after the run; tab thresholds are evaluated live by the action's `/proc` scanner (zero config on Linux) or an optional Chrome DevTools Protocol attach.
 
-We deliberately do **not** re-implement monitoring. monocart-reporter already measures, charts, and stores resource usage as a first-class part of your test report:
+## Setup
 
-- ✅ **Battle-tested sampler** maintained by monocart (default 1 s cadence, `tickTime` configurable)
-- ✅ **Beautiful HTML report** with the full CPU/memory timeline — for free
-- ✅ **One tiny action** (~1 file of logic): run → parse report → enforce limit → fail or warn
-- ✅ **Nothing extra installed by the action** — no `/proc` scanning, no CDP attach, no polling loops
-
-## Setup (one time, in the project using this action)
-
-Add monocart-reporter to your Playwright config with the `json: true` option enabled:
+### 1. Machine layer: add monocart-reporter
 
 ```bash
 npm i -D monocart-reporter
@@ -28,33 +24,59 @@ module.exports = {
     ['monocart-reporter', {
       name: 'My Test Report',
       outputFile: './monocart-report/index.html',
-      json: true, // writes ./monocart-report/index.json — read by this action
+      json: true, // writes ./monocart-report/index.json (also the default in recent versions)
     }]
   ]
 };
 ```
 
-That's all. The action reads `monocart-report/index.json` (configurable via the `monocart-json` input) after your command exits and enforces the thresholds.
+### 2. Tab layer: nothing (Linux) — optional CDP for exact labeling
+
+On Linux runners the tab sampler works with zero config: it discovers the Playwright browser process tree under `~/.cache/ms-playwright` via `/proc/<pid>/{cmdline,stat,status}` and treats `--type=renderer` processes as tabs.
+
+For macOS/Windows runners — or precise per-tab labels — opt in to CDP. The action exports the debug port as `RESOURCE_MONITOR_CDP_PORT`; point Chromium at it:
+
+```js
+// playwright.config.js — CDP mode (opt-in)
+const cdpPort = process.env.RESOURCE_MONITOR_CDP_PORT;
+
+use: {
+  launchOptions: {
+    args: cdpPort
+      ? [`--remote-debugging-port=${cdpPort}`, '--remote-debugging-address=127.0.0.1']
+      : [],
+  },
+},
+```
+
+> CDP mode shares one debug port across all browser instances, so it fits single-browser runs best. For parallel worker suites on Linux, stick with the `/proc` layer (every browser process is covered, no port conflicts).
 
 ## Inputs
 
-| Input | Description | Default |
-| --- | --- | --- |
-| `run-command` | Test command to execute and monitor, run through a shell (`bash -e -o pipefail -c`). | `npx playwright test` |
-| `cpu-threshold` | Max machine-wide CPU usage, % of **all cores combined** (1–100). E.g. 3 of 4 cores busy ≈ 75%. | `70` |
-| `memory-threshold` | Max machine memory usage, % of **total RAM** (1–100). | `70` |
-| `monocart-json` | Path to the monocart JSON data file, relative to the workspace. | `monocart-report/index.json` |
-| `fail-on-breach` | `true` fails the step on any breach; `false` only warns. | `true` |
+| Input | Layer | Description | Default |
+| --- | --- | --- | --- |
+| `run-command` | both | Test command to execute and monitor (`bash -e -o pipefail -c`). | `npx playwright test` |
+| `machine-cpu-threshold` | machine | Max machine CPU, % of all cores combined (1–100). | `70` |
+| `machine-memory-threshold` | machine | Max machine memory, % of total RAM (1–100). | `70` |
+| `tab-cpu-threshold` | tab | Max CPU for the worst single tab, % of one core (1–999). | `70` |
+| `tab-memory-threshold` | tab | Max memory for the worst single tab, % of effective RAM limit (1–100). | `70` |
+| `polling-interval` | tab | Tab sampler cadence in seconds (0.5–60). monocart's cadence is its own `tickTime` (default 1 s). | `2` |
+| `cdp-port` | tab | Opt-in CDP debug port for per-tab labeling. | *(empty)* |
+| `monocart-json` | machine | Path to the monocart JSON data file. | `monocart-report/index.json` |
+| `report-dir` | tab | Directory for the per-tab JSON/CSV reports. | `resource-monitor` |
+| `fail-on-breach` | both | `true` fails the step on any breach; `false` only warns. | `true` |
 
 ## Outputs
 
 | Output | Description |
 | --- | --- |
-| `peak-cpu-percent` | Highest machine-wide CPU observed during the run (% of all cores). |
-| `peak-memory-percent` | Highest machine memory usage observed (% of total RAM). |
-| `breach-count` | Number of samples that breached a threshold. |
-| `sample-count` | Number of samples in the monocart report. |
-| `report-found` | `true` when the monocart JSON was found and parsed. |
+| `peak-machine-cpu-percent` / `peak-machine-memory-percent` | Machine-wide peaks (% of all cores / % of total RAM). |
+| `machine-breach-count` | Breaching machine samples (from the monocart report). |
+| `peak-tab-cpu-percent` / `peak-tab-memory-percent` | Worst-tab peaks (empty when no tab samples were collected). |
+| `tab-breach-count` / `tab-sample-count` | Tab-layer breach count and sample count. |
+| `tab-source` | `cdp`, `proc`, or `none`. |
+| `monocart-found` | `true` when the monocart JSON was found and parsed. |
+| `report-json-path` | Path to the per-tab JSON report. |
 
 ## Usage
 
@@ -75,46 +97,42 @@ jobs:
       - uses: your-org/playwright-resource-monitor@v1
         id: monitor
         with:
-          cpu-threshold: 80
-          memory-threshold: 70
-      - name: Upload monocart report (includes the resource timeline)
+          machine-cpu-threshold: 80   # % of all cores
+          tab-cpu-threshold: 70       # % of one core, worst single tab
+      - name: Upload reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: monocart-report
-          path: monocart-report/
+          name: resource-reports
+          path: |
+            monocart-report/
+            resource-monitor/
 ```
 
-The monitored step replaces your normal `npx playwright test` step — it runs your command *and* enforces the limits.
-
-### Warn-only mode
-
-```yaml
-      - uses: your-org/playwright-resource-monitor@v1
-        with:
-          cpu-threshold: 80
-          fail-on-breach: false # record breaches, do not fail the step
-```
+The monitored step replaces your normal `npx playwright test` step — it runs your command *and* enforces both layers.
 
 ### Fail behavior
 
 - **run-command fails** → the action fails with the exit code (test result is authoritative).
-- **Threshold breach** (default `fail-on-breach: true`) → the action fails with a message showing peak CPU and memory vs your thresholds, plus the count of breaching samples.
-- **No monocart JSON found** (reporter not configured) → the action warns and skips enforcement; your test run is never blocked by a missing report.
+- **Any threshold breach** (machine or tab, `fail-on-breach: true` default) → the action fails naming each breached layer with peak values vs thresholds.
+- **`fail-on-breach: false`** → breaches log a `::warning::` only; the step stays green.
+- **Missing monocart JSON / no browsers** → the layer warns and is skipped; the run is never blocked by missing data.
 
-## Metric definitions (monocart's sampler)
+## Metric definitions
 
-- **CPU %** — machine-wide usage across all cores combined, sampled every `tickTime` (default 1000 ms). `100%` = every core saturated. monocart computes it from `os.cpus()` deltas (`100 − idle%`).
-- **Memory %** — machine memory in use = `(total − free) / total`, from `os.totalmem()` / `os.freemem()`.
+- **Machine CPU %** — aggregate across all cores, from `os.cpus()` deltas (`100 − idle%`); 100% = every core saturated.
+- **Machine memory %** — `(total − free) / total` from `os.totalmem()` / `os.freemem()`.
+- **Tab CPU %** — CPU time of the renderer process during the interval as % of **one core**; a multithreaded tab can exceed 100%.
+- **Tab memory %** — renderer RSS ÷ *effective RAM limit* (cgroup limit if present, else total RAM).
 
-Both are **system-level** figures: they describe the runner as a whole, not one tab or one process. To pinpoint *which* test or page consumed the resource, use monocart's report timeline alongside the breach timestamps in the step summary.
+Pinpoint the culprit: machine breaches → monocart report timeline; tab breaches → `resource-monitor/report.{json,csv}` (per-process rows with timestamps) plus the live alert groups in the log.
 
 ## Publishing to the Marketplace
 
 1. Push this repository with `dist/index.js` committed (CI enforces it stays fresh).
 2. Tag a release: `git tag v1 && git push origin v1` (use `v1.0.x` patches afterward).
 3. Repo → **Releases** → *Draft a new release* → pick the tag → check **Publish to the GitHub Marketplace** (public repo, `action.yml` at the root).
-4. Keep the `v1` tag on the latest patch so users receive fixes automatically.
+4. Keep the `v1` tag moving to the latest patch so users receive fixes automatically.
 
 ## Development
 
@@ -123,7 +141,7 @@ Bun is the toolchain (installs, bundling, tests) — the published `dist/` runs 
 ```bash
 bun install          # deps
 bun run build        # src/ -> dist/index.js (single-file CJS bundle)
-bun test             # unit tests for parsing/threshold logic
+bun test             # machine-layer (monocart) + tab-layer (evaluate) unit tests
 bunx tsc --noEmit    # strict typecheck
 ```
 
@@ -131,22 +149,29 @@ bunx tsc --noEmit    # strict typecheck
 
 ```
 action.yml            # action metadata + inputs/outputs
-src/index.ts          # orchestrator: spawn, parse, enforce, summarize
+src/index.ts          # orchestrator: spawn, tab monitoring, monocart eval, verdicts
 src/inputs.ts         # input parsing + validation
-src/monocart.ts       # monocart JSON parsing + threshold evaluation (unit tested)
+src/monocart.ts       # machine layer: monocart JSON parsing + thresholds (unit tested)
+src/evaluate.ts       # tab layer: pure threshold math (unit tested)
+src/tabMonitor.ts     # tab layer: polling engine, live grouped alerts, peaks
+src/procSampler.ts    # tab layer: /proc scanner (Linux, zero config)
+src/cdpSampler.ts     # tab layer: CDP attach via SystemInfo.getProcessInfo
+src/limit.ts          # effective RAM limit (cgroup aware)
+src/report.ts         # per-tab JSON/CSV writers
 src/spawn.ts          # shell spawn + process-group teardown
-test/                 # bun tests
+src/types.ts          # shared domain types
+test/                 # bun tests for both layers
 dist/index.js         # committed bundle required by Marketplace
-.github/workflows/    # CI (build + test + dist freshness check)
+.github/workflows/    # CI (build + test + dist freshness check + smoke run)
 ```
 
 ## Limitations & FAQ
 
-- **Machine-level, not per-tab.** Enforced metrics are the machine's aggregate CPU/memory, exactly what monocart charts. Pinpoint the culprit via the monocart report timeline.
-- **No live alerts.** monocart writes its report at the end of the run, so breach warnings surface as the final verdict rather than streaming into the log mid-run.
-- **`json: true` required.** The HTML report embeds (compressed) data; the standalone JSON file is what this action parses.
-- **Sharded runs:** point `monocart-json` at the shard whose report you want enforced, or merge shard zips with monocart's merge CLI first.
-- **Windows runners:** monocart's sampler uses Node APIs (`os.cpus/freemem`) — works on every platform the action runs on.
+- **No per-tab metrics without browsers:** the tab layer reports nothing if the run-command doesn't launch a browser; machine layer still works whenever monocart is configured.
+- **No live warnings from the machine layer:** monocart writes its report at run end. Tab breaches *are* logged live during the run.
+- **CDP + multiple workers share one debug port:** for parallel suites on Linux, prefer the `/proc` tab layer.
+- **Sharded runs:** point `monocart-json` at the shard to enforce, or merge shard zips with monocart's merge CLI first.
+- **Windows runners:** machine layer works (Node APIs); tab layer needs CDP mode.
 
 ## License
 

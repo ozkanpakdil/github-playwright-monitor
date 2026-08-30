@@ -1,9 +1,9 @@
 name: 'Playwright Resource Monitor'
 description: >-
-  Monitors machine CPU and memory usage while Playwright tests run, powered by
-  the built-in sampler of monocart-reporter. Fails the step when usage exceeds
-  the configured thresholds (70% by default) and links to the monocart report
-  timeline.
+  Two-layer resource guard for Playwright CI runs: machine-wide CPU/memory
+  thresholds from monocart-reporter's built-in sampler, plus per-tab (renderer
+  process) CPU/memory thresholds from its own /proc scanner (CDP optional).
+  Fails the step when any configured threshold is exceeded.
 author: 'playwright-resource-monitor contributors'
 
 branding:
@@ -15,34 +15,64 @@ inputs:
     description: 'The test command to execute and monitor (run in a shell).'
     required: false
     default: 'npx playwright test'
-  cpu-threshold:
-    description: 'Max machine-wide CPU usage, % of all cores combined (monocart sampler). Fails when exceeded.'
+  machine-cpu-threshold:
+    description: 'Max machine-wide CPU usage, % of all cores combined (from the monocart report).'
     required: false
     default: '70'
-  memory-threshold:
-    description: 'Max machine memory usage, % of total RAM. Fails when exceeded.'
+  machine-memory-threshold:
+    description: 'Max machine-wide memory usage, % of total RAM (from the monocart report).'
     required: false
     default: '70'
+  tab-cpu-threshold:
+    description: 'Max CPU for the worst single tab (renderer process), % of one core.'
+    required: false
+    default: '70'
+  tab-memory-threshold:
+    description: 'Max memory for the worst single tab, % of the effective RAM limit (cgroup limit if present, else total RAM).'
+    required: false
+    default: '70'
+  polling-interval:
+    description: 'How often, in seconds, the tab sampler polls (0.5–60). Machine-wide sampling cadence is monocart''s tickTime.'
+    required: false
+    default: '2'
+  cdp-port:
+    description: 'Opt-in: debug port to poll for precise per-tab labeling via Chrome DevTools Protocol. Empty = /proc scanner only (Linux).'
+    required: false
+    default: ''
   monocart-json:
-    description: 'Path to the monocart-reporter JSON data file (produced with the json: true reporter option).'
+    description: 'Path to the monocart-reporter JSON data file (json option, default location shown).'
     required: false
     default: 'monocart-report/index.json'
+  report-dir:
+    description: 'Directory (relative to the workspace) where the per-tab JSON/CSV reports are written.'
+    required: false
+    default: 'resource-monitor'
   fail-on-breach:
-    description: 'When true (default), a threshold breach fails the step. When false, breaches only warn.'
+    description: 'When true (default), any threshold breach (machine or tab) fails the step. When false, breaches only warn.'
     required: false
     default: 'true'
 
 outputs:
-  peak-cpu-percent:
-    description: 'Highest machine-wide CPU usage observed during the run (% of all cores).'
-  peak-memory-percent:
-    description: 'Highest machine memory usage observed during the run (% of total RAM).'
-  breach-count:
-    description: 'Number of samples that breached a threshold.'
-  sample-count:
-    description: 'Number of samples in the monocart report.'
-  report-found:
-    description: '"true" when the monocart JSON data file was found and parsed.'
+  peak-machine-cpu-percent:
+    description: 'Highest machine-wide CPU during the run (% of all cores, from the monocart report).'
+  peak-machine-memory-percent:
+    description: 'Highest machine-wide memory during the run (% of total RAM, from the monocart report).'
+  machine-breach-count:
+    description: 'Number of machine-wide samples that breached a threshold.'
+  peak-tab-cpu-percent:
+    description: 'Highest CPU observed on any single tab (% of one core). Empty when no tab samples.'
+  peak-tab-memory-percent:
+    description: 'Highest memory observed on any single tab (% of effective RAM limit). Empty when no tab samples.'
+  tab-breach-count:
+    description: 'Number of per-tab samples that breached a threshold.'
+  tab-sample-count:
+    description: 'Number of tab samples collected.'
+  tab-source:
+    description: '"cdp" or "proc" — the sampler that produced tab metrics; "none" when no samples.'
+  monocart-found:
+    description: '"true" when the monocart JSON was found and parsed.'
+  report-json-path:
+    description: 'Absolute path to the per-tab JSON report (resource-monitor/report.json).'
 
 runs:
   using: 'node20'

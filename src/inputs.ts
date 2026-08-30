@@ -3,10 +3,19 @@ import { resolve } from 'node:path';
 
 export interface ActionInputs {
   runCommand: string;
-  cpuThreshold: number;
-  memoryThreshold: number;
+  /** Machine-wide CPU % (monocart sampler, all cores combined). */
+  machineCpuThreshold: number;
+  /** Machine-wide memory % of total RAM (monocart sampler). */
+  machineMemoryThreshold: number;
+  /** Worst single tab CPU, % of one core (proc/CDP sampler). */
+  tabCpuThreshold: number;
+  /** Worst single tab memory, % of effective RAM limit (cgroup aware). */
+  tabMemoryThreshold: number;
+  pollingIntervalSeconds: number;
   failOnBreach: boolean;
+  cdpPort: number | null;
   monocartJson: string;
+  reportDir: string;
 }
 
 function readNumber(name: string, fallback: number, min: number, max: number): number {
@@ -31,22 +40,38 @@ export function readActionInputs(): ActionInputs {
     throw new Error('Input "run-command" cannot be empty.');
   }
 
-  const cpuThreshold = readNumber('cpu-threshold', 70, 1, 100);
-  const memoryThreshold = readNumber('memory-threshold', 70, 1, 100);
+  const machineCpuThreshold = readNumber('machine-cpu-threshold', 70, 1, 100);
+  const machineMemoryThreshold = readNumber('machine-memory-threshold', 70, 1, 100);
+  const tabCpuThreshold = readNumber('tab-cpu-threshold', 70, 1, 999);
+  const tabMemoryThreshold = readNumber('tab-memory-threshold', 70, 1, 100);
+  const pollingIntervalSeconds = readNumber('polling-interval', 2, 0.5, 60);
 
   const failRaw = core.getInput('fail-on-breach') || 'true';
   if (!/^(true|false)$/i.test(failRaw.trim())) {
     throw new Error(`Input "fail-on-breach" must be "true" or "false"; received "${failRaw}".`);
   }
 
-  const monocartJson = (core.getInput('monocart-json') || 'monocart-report/index.json').trim();
+  const cdpRaw = core.getInput('cdp-port', { required: false })?.trim() ?? '';
+  let cdpPort: number | null = null;
+  if (cdpRaw) {
+    const value = Number(cdpRaw);
+    if (!Number.isInteger(value) || value < 1 || value > 65535) {
+      throw new Error(`Input "cdp-port" must be an integer between 1 and 65535; received "${cdpRaw}".`);
+    }
+    cdpPort = value;
+  }
 
   return {
     runCommand,
-    cpuThreshold,
-    memoryThreshold,
+    machineCpuThreshold,
+    machineMemoryThreshold,
+    tabCpuThreshold,
+    tabMemoryThreshold,
+    pollingIntervalSeconds,
     failOnBreach: /^true$/i.test(failRaw.trim()),
-    monocartJson,
+    cdpPort,
+    monocartJson: (core.getInput('monocart-json') || 'monocart-report/index.json').trim(),
+    reportDir: (core.getInput('report-dir') || 'resource-monitor').trim(),
   };
 }
 
