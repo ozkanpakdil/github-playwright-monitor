@@ -4,7 +4,7 @@ description: >-
   thresholds from monocart-reporter's built-in sampler, plus per-tab (renderer
   process) CPU/memory thresholds from its own /proc scanner (CDP optional).
   Fails the step when any configured threshold is exceeded.
-author: 'playwright-resource-monitor contributors'
+author: 'ozkanpakdil'
 
 branding:
   icon: 'activity'

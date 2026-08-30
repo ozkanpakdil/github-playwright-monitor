@@ -5,6 +5,14 @@
   "license": "MIT",
   "private": true,
   "main": "dist/index.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ozkanpakdil/github-playwright-monitor"
+  },
+  "bugs": {
+    "url": "https://github.com/ozkanpakdil/github-playwright-monitor/issues"
+  },
+  "homepage": "https://github.com/ozkanpakdil/github-playwright-monitor#readme",
   "scripts": {
     "build": "bun build src/index.ts --target=node --format=cjs --outfile dist/index.js",
     "test": "bun test",

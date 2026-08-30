@@ -19,7 +19,7 @@ Paste this into any workflow with Playwright configured. Define your percentages
       - uses: actions/checkout@v4
       - run: npm ci
       - run: npx playwright install chromium
-      - uses: your-org/playwright-resource-monitor@v1
+      - uses: ozkanpakdil/github-playwright-monitor@v1
         with:
           machine-cpu-threshold: 80   # % of all cores (monocart sampler)
           machine-memory-threshold: 70# % of total RAM (monocart sampler)
@@ -46,10 +46,10 @@ To keep history across runs (runners are ephemeral), persist the history file wi
           path: resource-monitor/history.json
           key: resource-monitor-history-${{ github.run_id }}
           restore-keys: resource-monitor-history-
-      - uses: your-org/playwright-resource-monitor@v1
+      - uses: ozkanpakdil/github-playwright-monitor@v1
 ```
 
-`restore-keys` restores the latest saved history; each run appends its record and saves a new cache entry. On the Marketplace listing, the same snippets apply — search for **Playwright Resource Monitor** under [github.com/marketplace?type=actions](https://github.com/marketplace?type=actions) or call it directly with `uses: <owner>/playwright-resource-monitor@v1`.
+`restore-keys` restores the latest saved history; each run appends its record and saves a new cache entry. On the Marketplace listing, the same snippets apply — search for **Playwright Resource Monitor** under [github.com/marketplace?type=actions](https://github.com/marketplace?type=actions) or call it directly with `uses: ozkanpakdil/github-playwright-monitor@v1`.
 
 > Bonus: configure monocart's `trend: './monocart-report/index.json'` reporter option and cache `monocart-report/` instead of (or in addition to) the history file — its report gains a Trend Chart of past runs (tests/duration focus; the CPU/memory peak history lives in this action's history table).
 
@@ -140,7 +140,7 @@ jobs:
           node-version: 20
       - run: npm ci
       - run: npx playwright install --with-deps chromium
-      - uses: your-org/playwright-resource-monitor@v1
+      - uses: ozkanpakdil/github-playwright-monitor@v1
         id: monitor
         with:
           machine-cpu-threshold: 80   # % of all cores
@@ -175,10 +175,17 @@ Pinpoint the culprit: machine breaches → monocart report timeline; tab breache
 
 ## Publishing to the Marketplace
 
-1. Push this repository with `dist/index.js` committed (CI enforces it stays fresh).
-2. Tag a release: `git tag v1 && git push origin v1` (use `v1.0.x` patches afterward).
-3. Repo → **Releases** → *Draft a new release* → pick the tag → check **Publish to the GitHub Marketplace** (public repo, `action.yml` at the root).
-4. Keep the `v1` tag moving to the latest patch so users receive fixes automatically.
+This repository (`[ozkanpakdil/github-playwright-monitor](https://github.com/ozkanpakdil/github-playwright-monitor)`) is the publishing home:
+
+1. Push the repo (public) — it already has `dist/index.js` committed, and CI enforces the bundle stays fresh:
+   ```bash
+   git remote add origin https://github.com/ozkanpakdil/github-playwright-monitor.git
+   git push -u origin main
+   ```
+2. Tag the action: `git tag v1 && git push origin v1` (use `v1.0.x` patches afterward).
+3. Repo → **Releases** → *Draft a new release* → pick the `v1` tag → check **Publish to the GitHub Marketplace**.
+4. Set the repo **About** description/website on the repo page — it becomes the listing tagline.
+5. Move the `v1` tag to the latest patch for future fixes so `uses: ozkanpakdil/github-playwright-monitor@v1` keeps working for users.
 
 ## Development
 
