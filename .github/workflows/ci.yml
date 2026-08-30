@@ -41,12 +41,19 @@ jobs:
           polling-interval: 0.5
 
   # Pre-release validation: run the action around a REAL Playwright suite
-  # with a real browser so both layers are exercised end to end:
+  # with a real browser so both layers are exercised end to end.
   #   - tab layer: /proc scanner on Linux observes the renderer process
-  #   - machine layer: monocart-reporter produces system.ticks
+  #   - machine layer: "native" leg = built-in /proc sampler (zero user-side
+  #     config); "monocart" leg = monocart-reporter JSON as machine source
   smoke-real:
     name: Pre-release smoke (real Playwright)
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        flavor: [native, monocart]
+    env:
+      USE_MONOCART: ${{ matrix.flavor == 'monocart' && '1' || '0' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -76,24 +83,29 @@ jobs:
         run: |
           node -e '
             const t = Number(process.env.TAB_SAMPLES);
-            const m = Number(process.env.MACHINE_SAMPLES);
+            const mem = Number(process.env.MACHINE_MEM_PCT);
             const src = process.env.TAB_SOURCE;
-            console.log(`tab-source=${src} tab-sample-count=${t} machine samples=${m}`);
+            const machineSrc = process.env.MACHINE_SOURCE;
+            const wantMachineSrc = process.env.WANT_MACHINE_SOURCE;
+            console.log(`tab-source=${src} tab-sample-count=${t} peak-machine-mem=${mem}% machine-source=${machineSrc}`);
             if (src !== "proc") throw new Error(`expected tab-source=proc, got ${src}`);
             if (t < 1) throw new Error("tab layer produced no samples");
-            if (m < 1) throw new Error("machine layer produced no samples");
+            if (mem <= 0) throw new Error("machine layer produced no samples");
+            if (machineSrc !== wantMachineSrc) throw new Error(`expected machine-source=${wantMachineSrc}, got ${machineSrc}`);
             console.log("smoke assertions passed");
           ' || { echo "::error::smoke assertions failed"; exit 1; }
         env:
           TAB_SOURCE: ${{ steps.monitor.outputs.tab-source }}
           TAB_SAMPLES: ${{ steps.monitor.outputs.tab-sample-count }}
-          MACHINE_SAMPLES: ${{ steps.monitor.outputs.sample-count }}
+          MACHINE_MEM_PCT: ${{ steps.monitor.outputs.peak-machine-memory-percent }}
+          MACHINE_SOURCE: ${{ steps.monitor.outputs.machine-source }}
+          WANT_MACHINE_SOURCE: ${{ matrix.flavor == 'monocart' && 'monocart' || 'action' }}
 
       - name: Upload smoke reports
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: smoke-reports
+          name: smoke-reports-${{ matrix.flavor }}
           path: |
             test/smoke/monocart-smoke/
             resource-monitor/

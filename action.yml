@@ -1,9 +1,10 @@
 name: 'Playwright Resource Monitor'
 description: >-
-  Two-layer resource guard for Playwright CI runs: machine-wide CPU/memory
-  thresholds from monocart-reporter's built-in sampler, plus per-tab (renderer
-  process) CPU/memory thresholds from its own /proc scanner (CDP optional).
-  Fails the step when any configured threshold is exceeded.
+  Two-layer resource guard for Playwright CI runs with zero user-side
+  dependencies: machine-wide CPU/memory thresholds sampled by the action
+  itself from Linux /proc (monocart-reporter JSON optional), plus per-tab
+  (renderer process) CPU/memory thresholds from its own /proc scanner
+  (CDP optional). Fails the step when any configured threshold is exceeded.
 author: 'ozkanpakdil'
 
 branding:
@@ -16,11 +17,11 @@ inputs:
     required: false
     default: 'npx playwright test'
   machine-cpu-threshold:
-    description: 'Max machine-wide CPU usage, % of all cores combined (from the monocart report).'
+    description: 'Max machine-wide CPU usage, % of all cores combined. Sourced from the built-in /proc sampler (Linux) or the monocart report when configured.'
     required: false
     default: '70'
   machine-memory-threshold:
-    description: 'Max machine-wide memory usage, % of total RAM (from the monocart report).'
+    description: 'Max machine-wide memory usage, % of the effective RAM limit. Sourced from the built-in /proc sampler (Linux) or the monocart report when configured.'
     required: false
     default: '70'
   tab-cpu-threshold:
@@ -32,7 +33,7 @@ inputs:
     required: false
     default: '70'
   polling-interval:
-    description: 'How often, in seconds, the tab sampler polls (0.5–60). Machine-wide sampling cadence is monocart''s tickTime.'
+    description: 'How often, in seconds, the samplers poll (0.5–60). When monocart is used as the machine source, its tickTime still applies to the monocart side.'
     required: false
     default: '2'
   cdp-port:
@@ -62,11 +63,13 @@ inputs:
 
 outputs:
   peak-machine-cpu-percent:
-    description: 'Highest machine-wide CPU during the run (% of all cores, from the monocart report).'
+    description: 'Highest machine-wide CPU during the run (% of all cores).'
   peak-machine-memory-percent:
-    description: 'Highest machine-wide memory during the run (% of total RAM, from the monocart report).'
+    description: 'Highest machine-wide memory during the run (% of the effective RAM limit).'
   machine-breach-count:
     description: 'Number of machine-wide samples that breached a threshold.'
+  machine-source:
+    description: '"monocart" when the machine metrics came from a monocart report; "action" for the built-in /proc sampler; "none".'
   peak-tab-cpu-percent:
     description: 'Highest CPU observed on any single tab (% of one core). Empty when no tab samples.'
   peak-tab-memory-percent:

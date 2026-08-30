@@ -1,15 +1,13 @@
 # Playwright Resource Monitor
 
-A **two-layer resource guard** for Playwright CI runs:
+A **two-layer resource guard** for Playwright CI runs with **zero user-side dependencies**:
 
 | Layer | Source | What it watches | Live during run |
 | --- | --- | --- | --- |
-| **Machine** | [monocart-reporter](https://github.com/cenfun/monocart-reporter)'s built-in sampler (1 s cadence) | Machine-wide CPU % (all cores) and memory % of total RAM | Timeline in the monocart HTML report |
+| **Machine** | This action's built-in /proc sampler (Linux); [monocart-reporter](https://github.com/cenfun/monocart-reporter) JSON used automatically when configured | Machine-wide CPU % (all cores) and memory % of the effective RAM limit | Yes — grouped `::warning::` alerts from the built-in sampler |
 | **Tab** | This action's own sampler | **Worst single tab** (renderer process): CPU as % of one core, memory as % of the effective RAM limit | Yes — grouped `::warning::` alerts as the tests run |
 
-Fails the step when **any configured threshold** is exceeded. Machine thresholds come from monocart's report after the run; tab thresholds are evaluated live by the action's `/proc` scanner (zero config on Linux) or an optional Chrome DevTools Protocol attach.
-
-Fails the step when **any configured threshold** is exceeded. Machine breaches come from monocart's report after the run; tab breaches are evaluated live by the action's `/proc` scanner (zero config on Linux) or an optional Chrome DevTools Protocol attach.
+Fails the step when **any configured threshold** is exceeded. Machine metrics come from the action's own `/proc` sampler on Linux runners (zero config); if a monocart report is present, its ticks become the machine source of record and add an HTML timeline. Tab thresholds are evaluated live by the action's `/proc` scanner (zero config on Linux) or an optional Chrome DevTools Protocol attach. Runs without Playwright activity pass through silently.
 
 ## Quick start (add to your workflow)
 
@@ -21,17 +19,17 @@ Paste this into any workflow with Playwright configured. Define your percentages
       - run: npx playwright install chromium
       - uses: ozkanpakdil/github-playwright-monitor@v1
         with:
-          machine-cpu-threshold: 80   # % of all cores (monocart sampler)
-          machine-memory-threshold: 70# % of total RAM (monocart sampler)
+          machine-cpu-threshold: 80   # % of all cores (machine-wide)
+          machine-memory-threshold: 70# % of effective RAM limit
           tab-cpu-threshold: 70       # % of one core, worst single tab
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: resource-reports
-          path: |
-            monocart-report/
-            resource-monitor/
+          path: resource-monitor/
 ```
+
+That's it — no reporter changes, no new devDependencies. Everything below is optional enrichment.
 
 Every run writes into the **job summary** (and step logs):
 
@@ -55,7 +53,11 @@ To keep history across runs (runners are ephemeral), persist the history file wi
 
 ## Setup
 
-### 1. Machine layer: add monocart-reporter
+### 1. Machine layer: built-in on Linux — optional monocart timeline
+
+On Linux runners the machine sampler works with zero config: the action samples `/proc/stat` (CPU deltas across all cores) and `/proc/meminfo` (memory, cgroup-aware) at `polling-interval` cadence, logs live breach alerts, and enforces the `machine-*` thresholds.
+
+Optionally, add [monocart-reporter](https://github.com/cenfun/monocart-reporter) for an HTML timeline of machine + tests; the action then sources machine metrics from its report instead:
 
 ```bash
 npm i -D monocart-reporter
@@ -100,13 +102,13 @@ use: {
 | Input | Layer | Description | Default |
 | --- | --- | --- | --- |
 | `run-command` | both | Test command to execute and monitor (`bash -e -o pipefail -c`). | `npx playwright test` |
-| `machine-cpu-threshold` | machine | Max machine CPU, % of all cores combined (1–100). | `70` |
-| `machine-memory-threshold` | machine | Max machine memory, % of total RAM (1–100). | `70` |
+| `machine-cpu-threshold` | machine | Max machine CPU, % of all cores combined (1–100). Sourced from the built-in /proc sampler (Linux) or the monocart report when present. | `70` |
+| `machine-memory-threshold` | machine | Max machine memory, % of effective RAM limit (1–100). Same sourcing. | `70` |
 | `tab-cpu-threshold` | tab | Max CPU for the worst single tab, % of one core (1–999). | `70` |
 | `tab-memory-threshold` | tab | Max memory for the worst single tab, % of effective RAM limit (1–100). | `70` |
-| `polling-interval` | tab | Tab sampler cadence in seconds (0.5–60). monocart's cadence is its own `tickTime` (default 1 s). | `2` |
+| `polling-interval` | both | Sampler cadence in seconds (0.5–60) for the built-in machine + tab layers; monocart's cadence is its own `tickTime` (default 1 s). | `2` |
 | `cdp-port` | tab | Opt-in CDP debug port for per-tab labeling. | *(empty)* |
-| `monocart-json` | machine | Path to the monocart JSON data file. | `monocart-report/index.json` |
+| `monocart-json` | machine | Path to the monocart JSON data file; when found, monoticks become the machine source of record. | `monocart-report/index.json` |
 | `report-dir` | tab | Directory for the per-tab JSON/CSV reports. | `resource-monitor` |
 | `history-file` | both | File where every run's peak/outcome record is kept (rendered in the job summary as the Run history table). | `resource-monitor/history.json` |
 | `history-max-entries` | both | Max records kept in the history file (1–1000). | `50` |
@@ -116,11 +118,12 @@ use: {
 
 | Output | Description |
 | --- | --- |
-| `peak-machine-cpu-percent` / `peak-machine-memory-percent` | Machine-wide peaks (% of all cores / % of total RAM). |
-| `machine-breach-count` | Breaching machine samples (from the monocart report). |
+| `peak-machine-cpu-percent` / `peak-machine-memory-percent` | Machine-wide peaks (% of all cores / % of effective RAM limit). |
+| `machine-breach-count` | Breaching machine samples. |
 | `peak-tab-cpu-percent` / `peak-tab-memory-percent` | Worst-tab peaks (empty when no tab samples were collected). |
 | `tab-breach-count` / `tab-sample-count` | Tab-layer breach count and sample count. |
 | `tab-source` | `cdp`, `proc`, or `none`. |
+| `machine-source` | `action` (built-in /proc sampler), `monocart` (report JSON), or `none`. |
 | `monocart-found` | `true` when the monocart JSON was found and parsed. |
 | `report-json-path` | Path to the per-tab JSON report. |
 
@@ -162,7 +165,7 @@ The monitored step replaces your normal `npx playwright test` step — it runs y
 - **run-command fails** → the action fails with the exit code (test result is authoritative).
 - **Any threshold breach** (machine or tab, `fail-on-breach: true` default) → the action fails naming each breached layer with peak values vs thresholds.
 - **`fail-on-breach: false`** → breaches log a `::warning::` only; the step stays green.
-- **Missing monocart JSON / no browsers** → the layer warns and is skipped; the run is never blocked by missing data.
+- **Missing monocart JSON / no browsers** → the matching layer is skipped with an informational note; the run is never blocked by missing data. On Linux the machine layer always has data via the built-in sampler.
 
 ## Metric definitions
 
@@ -171,7 +174,7 @@ The monitored step replaces your normal `npx playwright test` step — it runs y
 - **Tab CPU %** — CPU time of the renderer process during the interval as % of **one core**; a multithreaded tab can exceed 100%.
 - **Tab memory %** — renderer RSS ÷ *effective RAM limit* (cgroup limit if present, else total RAM).
 
-Pinpoint the culprit: machine breaches → monocart report timeline; tab breaches → `resource-monitor/report.{json,csv}` (per-process rows with timestamps) plus the live alert groups in the log.
+Pinpoint the culprit: machine breaches → monocart report timeline (when configured) or the machine alert groups in the log; tab breaches → `resource-monitor/report.{json,csv}` (per-process rows with timestamps) plus the live alert groups in the log.
 
 ## Testing before publishing
 
@@ -235,8 +238,8 @@ dist/index.js         # committed bundle required by Marketplace
 
 ## Limitations & FAQ
 
-- **No per-tab metrics without browsers:** the tab layer reports nothing if the run-command doesn't launch a browser; machine layer still works whenever monocart is configured. The whole action also passes cleanly (informational note only) when a wrapped command has nothing to monitor.
-- **No live warnings from the machine layer:** monocart writes its report at run end. Tab breaches *are* logged live during the run.
+- **No per-tab metrics without browsers:** the tab layer reports nothing if the run-command doesn't launch a browser; machine layer still enforces on Linux via the built-in sampler. The whole action also passes cleanly (informational note only) when a wrapped command has nothing to monitor.
+- **Live machine alerts:** the built-in sampler logs breaches live. With monocart configured instead, monocart writes its report at run end, so live alerts come only from the tab layer (advisory /proc alerts still appear in the log).
 - **CDP + multiple workers share one debug port:** for parallel suites on Linux, prefer the `/proc` tab layer.
 - **Sharded runs:** point `monocart-json` at the shard to enforce, or merge shard zips with monocart's merge CLI first.
 - **Windows runners:** machine layer works (Node APIs); tab layer needs CDP mode.

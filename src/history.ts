@@ -21,6 +21,8 @@ export interface HistoryEntry {
   dateH: string;
   /** "passed" | "warned" | "failed" | "command-failed". */
   outcome: string;
+  /** Where machine metrics came from: 'monocart' | 'action' | 'none'. */
+  machineSource: string;
   machine: HistoryLayerStats | null;
   tab: HistoryLayerStats | null;
   tabSource: string;

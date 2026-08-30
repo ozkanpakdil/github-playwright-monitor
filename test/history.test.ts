@@ -6,6 +6,7 @@ function entry(overrides: Partial<HistoryEntry> = {}): HistoryEntry {
     date: 1_750_000_000_000,
     dateH: '2025-06-15 10:00:00',
     outcome: 'passed',
+    machineSource: 'action',
     machine: { peakCpuPercent: 40, peakMemoryPercent: 30, samples: 5 },
     tab: { peakCpuPercent: 55, peakMemoryPercent: 12, samples: 5 },
     tabSource: 'proc',
