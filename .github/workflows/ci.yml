@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bunx tsc --noEmit
+
+      - name: Unit tests
+        run: bun test
+
+      - name: Build dist
+        run: bun run build
+
+      - name: Verify committed dist is fresh
+        run: |
+          git diff --exit-code dist/index.js || {
+            echo "::error::dist/index.js is stale — run 'bun run build' and commit the result."
+            exit 1
+          }
+
+      - name: Action smoke run (no browsers on runner — expects a clean pass)
+        uses: ./
+        with:
+          run-command: echo smoke
+          polling-interval: 0.5

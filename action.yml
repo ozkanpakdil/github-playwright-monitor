@@ -1,0 +1,62 @@
+name: 'Playwright Resource Monitor'
+description: >-
+  Monitors per-tab CPU and memory usage of the browser processes Playwright
+  launches during a test run. Fails the step when the worst single tab crosses
+  the configured CPU or memory thresholds, with live warnings and a JSON/CSV report.
+author: 'playwright-resource-monitor contributors'
+
+branding:
+  icon: 'activity'
+  color: 'blue'
+
+inputs:
+  run-command:
+    description: 'The test command to execute and monitor (run in a shell).'
+    required: false
+    default: 'npx playwright test'
+  cpu-threshold:
+    description: 'Max allowed CPU for the worst single tab, as % of one core. Fails when exceeded.'
+    required: false
+    default: '70'
+  memory-threshold:
+    description: 'Max allowed memory for the worst single tab, as % of the effective RAM limit (cgroup limit if present, otherwise host total).'
+    required: false
+    default: '70'
+  polling-interval:
+    description: 'How often, in seconds, to sample tab metrics (0.5–60).'
+    required: false
+    default: '2'
+  fail-on-breach:
+    description: 'When true (default), a threshold breach fails the step. When false, breaches only warn.'
+    required: false
+    default: 'true'
+  cdp-port:
+    description: 'Opt-in: port to poll for a Chrome DevTools Protocol endpoint for precise per-tab labeling. Empty = rely on the /proc scanner (Linux).'
+    required: false
+    default: ''
+  report-dir:
+    description: 'Directory (relative to the workspace) where the JSON and CSV reports are written.'
+    required: false
+    default: 'resource-monitor'
+
+outputs:
+  peak-tab-cpu-percent:
+    description: 'Highest CPU observed on any single tab during the run (% of one core).'
+  peak-tab-memory-percent:
+    description: 'Highest memory observed on any single tab during the run (% of the effective RAM limit).'
+  peak-tab-label:
+    description: 'Label of the tab that produced the CPU peak, e.g. "renderer pid 1234".'
+  breach-count:
+    description: 'Number of samples that breached a threshold.'
+  cdp-attached:
+    description: '"true" when metrics came from an attached CDP endpoint, "false" when from the /proc scanner (or neither).'
+  sample-count:
+    description: 'Number of evaluation samples collected.'
+  report-json-path:
+    description: 'Absolute path to the detailed JSON report.'
+  report-csv-path:
+    description: 'Absolute path to the CSV report.'
+
+runs:
+  using: 'node20'
+  main: 'dist/index.js'
