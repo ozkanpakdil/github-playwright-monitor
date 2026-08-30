@@ -9,6 +9,50 @@ A **two-layer resource guard** for Playwright CI runs:
 
 Fails the step when **any configured threshold** is exceeded. Machine thresholds come from monocart's report after the run; tab thresholds are evaluated live by the action's `/proc` scanner (zero config on Linux) or an optional Chrome DevTools Protocol attach.
 
+Fails the step when **any configured threshold** is exceeded. Machine breaches come from monocart's report after the run; tab breaches are evaluated live by the action's `/proc` scanner (zero config on Linux) or an optional Chrome DevTools Protocol attach.
+
+## Quick start (add to your workflow)
+
+Paste this into any workflow with Playwright configured. Define your percentages, and the build passes or fails accordingly — with every run's peaks recorded in the run logs, the job summary, and a cross-run history file:
+
+```yaml
+      - uses: actions/checkout@v4
+      - run: npm ci
+      - run: npx playwright install chromium
+      - uses: your-org/playwright-resource-monitor@v1
+        with:
+          machine-cpu-threshold: 80   # % of all cores (monocart sampler)
+          machine-memory-threshold: 70# % of total RAM (monocart sampler)
+          tab-cpu-threshold: 70       # % of one core, worst single tab
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: resource-reports
+          path: |
+            monocart-report/
+            resource-monitor/
+```
+
+Every run writes into the **job summary** (and step logs):
+
+- a peaks-vs-thresholds table for both layers,
+- a **Run history** table — the last 10 runs with machine/tab peaks and outcomes, each linking back to its workflow run.
+
+To keep history across runs (runners are ephemeral), persist the history file with `actions/cache`:
+
+```yaml
+      - uses: actions/cache@v4
+        with:
+          path: resource-monitor/history.json
+          key: resource-monitor-history-${{ github.run_id }}
+          restore-keys: resource-monitor-history-
+      - uses: your-org/playwright-resource-monitor@v1
+```
+
+`restore-keys` restores the latest saved history; each run appends its record and saves a new cache entry. On the Marketplace listing, the same snippets apply — search for **Playwright Resource Monitor** under [github.com/marketplace?type=actions](https://github.com/marketplace?type=actions) or call it directly with `uses: <owner>/playwright-resource-monitor@v1`.
+
+> Bonus: configure monocart's `trend: './monocart-report/index.json'` reporter option and cache `monocart-report/` instead of (or in addition to) the history file — its report gains a Trend Chart of past runs (tests/duration focus; the CPU/memory peak history lives in this action's history table).
+
 ## Setup
 
 ### 1. Machine layer: add monocart-reporter
@@ -64,6 +108,8 @@ use: {
 | `cdp-port` | tab | Opt-in CDP debug port for per-tab labeling. | *(empty)* |
 | `monocart-json` | machine | Path to the monocart JSON data file. | `monocart-report/index.json` |
 | `report-dir` | tab | Directory for the per-tab JSON/CSV reports. | `resource-monitor` |
+| `history-file` | both | File where every run's peak/outcome record is kept (rendered in the job summary as the Run history table). | `resource-monitor/history.json` |
+| `history-max-entries` | both | Max records kept in the history file (1–1000). | `50` |
 | `fail-on-breach` | both | `true` fails the step on any breach; `false` only warns. | `true` |
 
 ## Outputs
@@ -149,8 +195,9 @@ bunx tsc --noEmit    # strict typecheck
 
 ```
 action.yml            # action metadata + inputs/outputs
-src/index.ts          # orchestrator: spawn, tab monitoring, monocart eval, verdicts
+src/index.ts          # orchestrator: spawn, tab monitoring, monocart eval, verdicts, history
 src/inputs.ts         # input parsing + validation
+src/history.ts        # cross-run history file + job-summary history table (unit tested)
 src/monocart.ts       # machine layer: monocart JSON parsing + thresholds (unit tested)
 src/evaluate.ts       # tab layer: pure threshold math (unit tested)
 src/tabMonitor.ts     # tab layer: polling engine, live grouped alerts, peaks

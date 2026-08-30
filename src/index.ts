@@ -7,8 +7,9 @@ import { TabMonitor } from './tabMonitor';
 import type { MonitorSummary } from './types';
 import { resolveRamLimitBytes } from './limit';
 import { writeReports } from './report';
-import { evaluateThresholds as evaluateMachine, loadReadings } from './monocart';
+import { evaluateThresholds as evaluateMachine, loadReadings, type BreachTick } from './monocart';
 import { formatBytes } from './evaluate';
+import { appendEntry, historyTableRows, loadHistory, saveHistory, type HistoryEntry } from './history';
 
 const FINISH_DELAY_MS = 800;
 
@@ -116,14 +117,62 @@ async function run(): Promise<void> {
     memoryThreshold: inputs.machineMemoryThreshold,
   });
 
-  setOutputs(tabSummary, machine, monocartFound, tabReport.jsonPath);
-  printSummary(inputs, tabSummary, machine, monocartFound, monocartPath, tabReport.jsonPath);
-
-  // ---- Verdicts ---------------------------------------------------------
+  // ---- Run record: persist + show history across runs -------------------
   const commandFailed = exitInfo.error !== null || exitInfo.code !== 0;
   const machineBreached = machine.breachTicks.length > 0;
   const tabBreached = tabSummary.breaches.length > 0;
+  const breachedNow = machineBreached || tabBreached;
+  const outcome = commandFailed
+    ? 'command-failed'
+    : breachedNow
+      ? (inputs.failOnBreach ? 'failed' : 'warned')
+      : 'passed';
 
+  const historyPath = resolveWorkPath(inputs.historyFile);
+  const entry: HistoryEntry = {
+    date: startedAt,
+    dateH: new Date(startedAt).toISOString().replace('T', ' ').slice(0, 19),
+    outcome,
+    machine: readings.length
+      ? { peakCpuPercent: machine.peakCpuPercent, peakMemoryPercent: machine.peakMemoryPercent, samples: readings.length }
+      : null,
+    tab: tabSummary.readings.length
+      ? {
+          peakCpuPercent: tabSummary.peakCpu?.cpuPercent ?? null,
+          peakMemoryPercent: tabSummary.peakMem?.memoryPercent ?? null,
+          samples: tabSummary.readings.length,
+        }
+      : null,
+    tabSource: tabSummary.source ?? 'none',
+    breached: {
+      machineCpu: machine.breachTicks.some((t) => t.cpuPercent > inputs.machineCpuThreshold),
+      machineMemory: machine.breachTicks.some((t) => t.memoryPercent > inputs.machineMemoryThreshold),
+      tabCpu: tabSummary.breaches.some((b) => b.cpuPercent > inputs.tabCpuThreshold),
+      tabMemory: tabSummary.breaches.some((b) => b.memoryPercent > inputs.tabMemoryThreshold),
+    },
+    thresholds: {
+      machineCpu: inputs.machineCpuThreshold,
+      machineMemory: inputs.machineMemoryThreshold,
+      tabCpu: inputs.tabCpuThreshold,
+      tabMemory: inputs.tabMemoryThreshold,
+    },
+    command: inputs.runCommand,
+    runId: process.env.GITHUB_RUN_ID ?? '',
+    runUrl: buildRunUrl(),
+  };
+  const history = appendEntry(loadHistory(historyPath), entry, inputs.historyMaxEntries);
+  saveHistory(historyPath, history);
+  core.startGroup('Run record (appended to history)');
+  core.info(JSON.stringify(entry, null, 2));
+  core.endGroup();
+
+  setOutputs(tabSummary, machine, monocartFound, tabReport.jsonPath);
+  printSummary(inputs, tabSummary, machine, monocartFound, monocartPath, tabReport.jsonPath, history);
+
+  setOutputs(tabSummary, machine, monocartFound, tabReport.jsonPath);
+  printSummary(inputs, tabSummary, machine, monocartFound, monocartPath, tabReport.jsonPath, history);
+
+  // ---- Verdicts ---------------------------------------------------------
   if (exitInfo.error !== null) {
     setFailure(new Error(`Failed to start run-command: ${exitInfo.error.message}`));
     return;
@@ -157,7 +206,7 @@ async function run(): Promise<void> {
 
 function buildBreachMessage(
   inputs: { machineCpuThreshold: number; machineMemoryThreshold: number; tabCpuThreshold: number; tabMemoryThreshold: number },
-  machine: { peakCpuPercent: number; peakMemoryPercent: number; breachTicks: unknown[] },
+  machine: MachineEval,
   machineBreached: boolean,
   tabSummary: MonitorSummary,
   tabBreached: boolean,
@@ -184,7 +233,15 @@ function buildBreachMessage(
 interface MachineEval {
   peakCpuPercent: number;
   peakMemoryPercent: number;
-  breachTicks: unknown[];
+  breachTicks: BreachTick[];
+}
+
+function buildRunUrl(): string {
+  const { GITHUB_SERVER_URL, GITHUB_REPOSITORY, GITHUB_RUN_ID } = process.env;
+  if (GITHUB_SERVER_URL && GITHUB_REPOSITORY && GITHUB_RUN_ID) {
+    return `${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}`;
+  }
+  return '';
 }
 
 function setOutputs(
@@ -212,6 +269,7 @@ function printSummary(
   monocartFound: boolean,
   monocartPath: string,
   tabReportJsonPath: string,
+  history: HistoryEntry[],
 ): void {
   const rows: (string | { data: string; header?: boolean })[][] = [
     [{ data: 'Layer', header: true }, { data: 'Metric', header: true }, { data: 'Peak', header: true }, { data: 'Threshold', header: true }],
@@ -226,19 +284,24 @@ function printSummary(
   if (tabSummary.peakMem !== null) {
     rows.push(['tab', 'Memory, % of RAM limit', `${tabSummary.peakMem.memoryPercent.toFixed(1)}%`, `${inputs.tabMemoryThreshold}%`]);
   }
-  if (rows.length === 1) return;
 
-  const extras = [`Monocart timeline: <code>${monocartPath}</code>`];
-  if (tabSummary.readings.length > 0) {
-    extras.push(`Tab report: <code>${tabReportJsonPath}</code>`);
+  const summary = core.summary.addHeading('Playwright Resource Monitor');
+  if (rows.length > 1) {
+    summary.addTable(rows);
+    const extras = [`Monocart timeline: <code>${monocartPath}</code>`];
+    if (tabSummary.readings.length > 0) {
+      extras.push(`Tab report: <code>${tabReportJsonPath}</code>`);
+    }
+    summary.addRaw(`<p>${extras.join(' | ')}.</p>`);
   }
 
-  core.summary
-    .addHeading('Playwright Resource Monitor')
-    .addTable(rows)
-    .addRaw(`<p>${extras.join(' | ')}.</p>`)
-    .write()
-    .catch((): void => {});
+  if (history.length > 0) {
+    summary
+      .addHeading('Run history (most recent first)', 2)
+      .addTable(historyTableRows(history))
+      .addRaw('<p>Persist this file across runs with <code>actions/cache</code> (see README) to keep the trend.</p>');
+  }
+  summary.write().catch((): void => {});
 }
 
 async function main(): Promise<void> {

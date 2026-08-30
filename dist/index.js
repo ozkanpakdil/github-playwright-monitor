@@ -21790,7 +21790,9 @@ function readActionInputs() {
     failOnBreach: /^true$/i.test(failRaw.trim()),
     cdpPort,
     monocartJson: (core.getInput("monocart-json") || "monocart-report/index.json").trim(),
-    reportDir: (core.getInput("report-dir") || "resource-monitor").trim()
+    reportDir: (core.getInput("report-dir") || "resource-monitor").trim(),
+    historyFile: (core.getInput("history-file") || "resource-monitor/history.json").trim(),
+    historyMaxEntries: readNumber("history-max-entries", 50, 1, 1000)
   };
 }
 function resolveWorkPath(p) {
@@ -22511,6 +22513,66 @@ function loadReadings(jsonPath) {
   }
 }
 
+// src/history.ts
+var import_node_fs5 = require("node:fs");
+var import_node_path4 = require("node:path");
+var HISTORY_TABLE_LIMIT = 10;
+function loadHistory(path) {
+  try {
+    const parsed = JSON.parse(import_node_fs5.readFileSync(path, "utf8"));
+    if (!Array.isArray(parsed))
+      return [];
+    return parsed.filter((item) => typeof item === "object" && item !== null && typeof item.date === "number");
+  } catch {
+    return [];
+  }
+}
+function appendEntry(entries, entry, max) {
+  const next = [...entries, entry];
+  if (next.length > max) {
+    return next.slice(next.length - max);
+  }
+  return next;
+}
+function saveHistory(path, entries) {
+  import_node_fs5.mkdirSync(import_node_path4.dirname(path), { recursive: true });
+  import_node_fs5.writeFileSync(path, `${JSON.stringify(entries, null, 2)}
+`, "utf8");
+}
+function fmt(value) {
+  if (value === null || value === undefined)
+    return "-";
+  return `${value.toFixed(1)}%`;
+}
+function historyTableRows(entries, limit = HISTORY_TABLE_LIMIT) {
+  const rows = [
+    [
+      { data: "Run", header: true },
+      { data: "Outcome", header: true },
+      { data: "Machine CPU", header: true },
+      { data: "Machine Mem", header: true },
+      { data: "Tab CPU", header: true },
+      { data: "Tab Mem", header: true }
+    ]
+  ];
+  const recent = [...entries].slice(-limit).reverse();
+  for (const entry of recent) {
+    let run = entry.dateH;
+    if (entry.runUrl) {
+      run = `[${entry.dateH}](${entry.runUrl})`;
+    }
+    rows.push([
+      run,
+      entry.outcome,
+      fmt(entry.machine?.peakCpuPercent),
+      fmt(entry.machine?.peakMemoryPercent),
+      fmt(entry.tab?.peakCpuPercent),
+      fmt(entry.tab?.peakMemoryPercent)
+    ]);
+  }
+  return rows;
+}
+
 // src/index.ts
 var FINISH_DELAY_MS = 800;
 
@@ -22600,11 +22662,48 @@ async function run() {
     cpuThreshold: inputs.machineCpuThreshold,
     memoryThreshold: inputs.machineMemoryThreshold
   });
-  setOutputs(tabSummary, machine, monocartFound, tabReport.jsonPath);
-  printSummary(inputs, tabSummary, machine, monocartFound, monocartPath, tabReport.jsonPath);
   const commandFailed = exitInfo.error !== null || exitInfo.code !== 0;
   const machineBreached = machine.breachTicks.length > 0;
   const tabBreached = tabSummary.breaches.length > 0;
+  const breachedNow = machineBreached || tabBreached;
+  const outcome = commandFailed ? "command-failed" : breachedNow ? inputs.failOnBreach ? "failed" : "warned" : "passed";
+  const historyPath = resolveWorkPath(inputs.historyFile);
+  const entry = {
+    date: startedAt,
+    dateH: new Date(startedAt).toISOString().replace("T", " ").slice(0, 19),
+    outcome,
+    machine: readings.length ? { peakCpuPercent: machine.peakCpuPercent, peakMemoryPercent: machine.peakMemoryPercent, samples: readings.length } : null,
+    tab: tabSummary.readings.length ? {
+      peakCpuPercent: tabSummary.peakCpu?.cpuPercent ?? null,
+      peakMemoryPercent: tabSummary.peakMem?.memoryPercent ?? null,
+      samples: tabSummary.readings.length
+    } : null,
+    tabSource: tabSummary.source ?? "none",
+    breached: {
+      machineCpu: machine.breachTicks.some((t) => t.cpuPercent > inputs.machineCpuThreshold),
+      machineMemory: machine.breachTicks.some((t) => t.memoryPercent > inputs.machineMemoryThreshold),
+      tabCpu: tabSummary.breaches.some((b) => b.cpuPercent > inputs.tabCpuThreshold),
+      tabMemory: tabSummary.breaches.some((b) => b.memoryPercent > inputs.tabMemoryThreshold)
+    },
+    thresholds: {
+      machineCpu: inputs.machineCpuThreshold,
+      machineMemory: inputs.machineMemoryThreshold,
+      tabCpu: inputs.tabCpuThreshold,
+      tabMemory: inputs.tabMemoryThreshold
+    },
+    command: inputs.runCommand,
+    runId: process.env.GITHUB_RUN_ID ?? "",
+    runUrl: buildRunUrl()
+  };
+  const history = appendEntry(loadHistory(historyPath), entry, inputs.historyMaxEntries);
+  saveHistory(historyPath, history);
+  core3.startGroup("Run record (appended to history)");
+  core3.info(JSON.stringify(entry, null, 2));
+  core3.endGroup();
+  setOutputs(tabSummary, machine, monocartFound, tabReport.jsonPath);
+  printSummary(inputs, tabSummary, machine, monocartFound, monocartPath, tabReport.jsonPath, history);
+  setOutputs(tabSummary, machine, monocartFound, tabReport.jsonPath);
+  printSummary(inputs, tabSummary, machine, monocartFound, monocartPath, tabReport.jsonPath, history);
   if (exitInfo.error !== null) {
     setFailure(new Error(`Failed to start run-command: ${exitInfo.error.message}`));
     return;
@@ -22642,6 +22741,13 @@ function buildBreachMessage(inputs, machine, machineBreached, tabSummary, tabBre
   }
   return `Resource threshold breach: ${parts.join("; ")}. Breaching: ${counts.join(" + ")}. See the monocart report and the resource-monitor tab report for the full timeline.`;
 }
+function buildRunUrl() {
+  const { GITHUB_SERVER_URL, GITHUB_REPOSITORY, GITHUB_RUN_ID } = process.env;
+  if (GITHUB_SERVER_URL && GITHUB_REPOSITORY && GITHUB_RUN_ID) {
+    return `${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}`;
+  }
+  return "";
+}
 function setOutputs(tabSummary, machine, monocartFound, tabReportJsonPath) {
   core3.setOutput("peak-machine-cpu-percent", machine.peakCpuPercent.toFixed(2));
   core3.setOutput("peak-machine-memory-percent", machine.peakMemoryPercent.toFixed(2));
@@ -22654,7 +22760,7 @@ function setOutputs(tabSummary, machine, monocartFound, tabReportJsonPath) {
   core3.setOutput("monocart-found", String(monocartFound));
   core3.setOutput("report-json-path", tabReportJsonPath);
 }
-function printSummary(inputs, tabSummary, machine, monocartFound, monocartPath, tabReportJsonPath) {
+function printSummary(inputs, tabSummary, machine, monocartFound, monocartPath, tabReportJsonPath, history) {
   const rows = [
     [{ data: "Layer", header: true }, { data: "Metric", header: true }, { data: "Peak", header: true }, { data: "Threshold", header: true }]
   ];
@@ -22668,13 +22774,19 @@ function printSummary(inputs, tabSummary, machine, monocartFound, monocartPath, 
   if (tabSummary.peakMem !== null) {
     rows.push(["tab", "Memory, % of RAM limit", `${tabSummary.peakMem.memoryPercent.toFixed(1)}%`, `${inputs.tabMemoryThreshold}%`]);
   }
-  if (rows.length === 1)
-    return;
-  const extras = [`Monocart timeline: <code>${monocartPath}</code>`];
-  if (tabSummary.readings.length > 0) {
-    extras.push(`Tab report: <code>${tabReportJsonPath}</code>`);
+  const summary2 = core3.summary.addHeading("Playwright Resource Monitor");
+  if (rows.length > 1) {
+    summary2.addTable(rows);
+    const extras = [`Monocart timeline: <code>${monocartPath}</code>`];
+    if (tabSummary.readings.length > 0) {
+      extras.push(`Tab report: <code>${tabReportJsonPath}</code>`);
+    }
+    summary2.addRaw(`<p>${extras.join(" | ")}.</p>`);
   }
-  core3.summary.addHeading("Playwright Resource Monitor").addTable(rows).addRaw(`<p>${extras.join(" | ")}.</p>`).write().catch(() => {});
+  if (history.length > 0) {
+    summary2.addHeading("Run history (most recent first)", 2).addTable(historyTableRows(history)).addRaw("<p>Persist this file across runs with <code>actions/cache</code> (see README) to keep the trend.</p>");
+  }
+  summary2.write().catch(() => {});
 }
 async function main() {
   try {

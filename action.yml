@@ -47,6 +47,14 @@ inputs:
     description: 'Directory (relative to the workspace) where the per-tab JSON/CSV reports are written.'
     required: false
     default: 'resource-monitor'
+  history-file:
+    description: 'File (relative to the workspace) where the per-run summary history is kept. Persist it with actions/cache for cross-run trends.'
+    required: false
+    default: 'resource-monitor/history.json'
+  history-max-entries:
+    description: 'Maximum run records kept in the history file (1–1000).'
+    required: false
+    default: '50'
   fail-on-breach:
     description: 'When true (default), any threshold breach (machine or tab) fails the step. When false, breaches only warn.'
     required: false

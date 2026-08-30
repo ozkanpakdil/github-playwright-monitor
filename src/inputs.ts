@@ -16,6 +16,8 @@ export interface ActionInputs {
   cdpPort: number | null;
   monocartJson: string;
   reportDir: string;
+  historyFile: string;
+  historyMaxEntries: number;
 }
 
 function readNumber(name: string, fallback: number, min: number, max: number): number {
@@ -72,6 +74,8 @@ export function readActionInputs(): ActionInputs {
     cdpPort,
     monocartJson: (core.getInput('monocart-json') || 'monocart-report/index.json').trim(),
     reportDir: (core.getInput('report-dir') || 'resource-monitor').trim(),
+    historyFile: (core.getInput('history-file') || 'resource-monitor/history.json').trim(),
+    historyMaxEntries: readNumber('history-max-entries', 50, 1, 1000),
   };
 }
 
