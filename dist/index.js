@@ -22354,8 +22354,7 @@ class TabMonitor {
   }
   finish() {
     if (this.readings.length === 0) {
-      const waitedS = Math.round((Date.now() - this.startedAt) / 1000);
-      core2.warning(`No tab metrics were collected (waited ${waitedS}s). ` + "On Linux runners the /proc scanner works with zero config, so this usually means no browser was launched " + 'or the run is on macOS/Windows without CDP mode. See the README "How it works" section.');
+      core2.debug("Tab layer collected no samples (no observed browser processes).");
     }
     return {
       samples: this.samples,
@@ -22723,7 +22722,9 @@ async function run() {
     return;
   }
   if (!monocartFound && tabSummary.readings.length === 0) {
-    core3.warning("Neither monitoring layer produced data: no monocart JSON found at " + `"${inputs.monocartJson}" (add monocart-reporter with json:true — see README) and no browser ` + "processes were observed by the tab sampler (proc scanner is Linux-only; enable CDP mode elsewhere).");
+    core3.info("No Playwright test activity detected (no browser processes, no monocart report) — " + "resource monitoring skipped; nothing was enforced. This is not an error.");
+  } else if (!monocartFound) {
+    core3.info(`monocart report not found at "${inputs.monocartJson}" — machine-wide layer skipped; ` + "the per-tab layer was active. Configure monocart-reporter (see README) to enable machine thresholds.");
   } else {
     core3.info(`No threshold breach detected (machine: ${readings.length} samples, tab: ${tabSummary.readings.length} samples). All good.`);
   }

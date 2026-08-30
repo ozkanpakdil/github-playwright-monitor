@@ -192,10 +192,16 @@ async function run(): Promise<void> {
     return;
   }
   if (!monocartFound && tabSummary.readings.length === 0) {
-    core.warning(
-      'Neither monitoring layer produced data: no monocart JSON found at ' +
-        `"${inputs.monocartJson}" (add monocart-reporter with json:true — see README) and no browser ` +
-        'processes were observed by the tab sampler (proc scanner is Linux-only; enable CDP mode elsewhere).',
+    // Perfectly fine: the wrapped command launched no browsers and/or the
+    // project has no monocart reporter. The action simply passes through.
+    core.info(
+      'No Playwright test activity detected (no browser processes, no monocart report) — ' +
+        'resource monitoring skipped; nothing was enforced. This is not an error.',
+    );
+  } else if (!monocartFound) {
+    core.info(
+      `monocart report not found at "${inputs.monocartJson}" — machine-wide layer skipped; ` +
+        'the per-tab layer was active. Configure monocart-reporter (see README) to enable machine thresholds.',
     );
   } else {
     core.info(

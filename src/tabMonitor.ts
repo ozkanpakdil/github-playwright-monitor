@@ -164,12 +164,8 @@ export class TabMonitor {
 
   finish(): MonitorSummary {
     if (this.readings.length === 0) {
-      const waitedS = Math.round((Date.now() - this.startedAt) / 1000);
-      core.warning(
-        `No tab metrics were collected (waited ${waitedS}s). ` +
-          'On Linux runners the /proc scanner works with zero config, so this usually means no browser was launched ' +
-          'or the run is on macOS/Windows without CDP mode. See the README "How it works" section.',
-      );
+      // Not an error: plenty of run-commands launch no browsers at all.
+      core.debug('Tab layer collected no samples (no observed browser processes).');
     }
     return {
       samples: this.samples,
