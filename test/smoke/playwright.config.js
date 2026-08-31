@@ -3,7 +3,7 @@
 const useMonocart = process.env.USE_MONOCART !== '0';
 module.exports = {
   testDir: '.',
-  testMatch: ['*.tests.js'],
+  testMatch: ['*.e2e.js'],
   workers: 1,
   reporter: useMonocart
     ? [['monocart-reporter', { outputFile: './monocart-smoke/index.html', json: true }]]

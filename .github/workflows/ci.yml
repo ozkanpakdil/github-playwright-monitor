@@ -63,13 +63,15 @@ jobs:
       - name: Install Chromium
         run: cd test/smoke && npx playwright install --with-deps chromium
 
-      # The action spawns run-command from the workspace root; the smoke
-      # project's scripts resolve their own paths.
+      # The action spawns run-command from the workspace root, so cd into the
+      # smoke project first (npm --prefix does NOT change the script's cwd —
+      # the first CI run proved it: Playwright ran at the root, found no
+      # tests, and exited 1).
       - name: Run the action around a real browser test
         id: monitor
         uses: ./
         with:
-          run-command: npm test --prefix test/smoke
+          run-command: cd test/smoke && npm test
           polling-interval: 1
           # Generous limits: this job asserts that metrics are COLLECTED,
           # not that they breach.
